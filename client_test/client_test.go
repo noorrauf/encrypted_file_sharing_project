@@ -257,7 +257,6 @@ var _ = Describe("Client Tests", func() {
 			_,  err = client.GetUser("alice", "Wrong_Passoword")
 			Expect(err).ToNot(BeNil())
 
-			//Integrity Fail
 			userlib.DebugMsg("Tamper with datastore, so GetUser should fail ")
 			//for every key , change last bit of value
 			for k := range userlib.DatastoreGetMap() {
@@ -270,6 +269,65 @@ var _ = Describe("Client Tests", func() {
 
 		})
 	})
+	//Integrity Test for File
+	Describe("Store/Loading File Test", func() {
+		Specify("Tampering with a stored file and loading it get user fail", func() {
+			userlib.DebugMsg("tamper the file stored")
+			alice, err = client.InitUser("alice", defaultPassword)
+			alice.StoreFile(aliceFile, []byte(contentOne))
+
+			//for every key , change last bit of value
+			for k := range userlib.DatastoreGetMap() {
+				v := userlib.DatastoreGetMap()[k]
+				v[0] ^= 0xFF
+				userlib.DatastoreGetMap()[k] = v
+			}
+			_, err = alice.LoadFile(aliceFile) 
+			Expect(err).ToNot(BeNil())
+
+		})
+		Specify("Filename stored twice", func() {
+			userlib.DebugMsg("Alice stores file x, and stores x again, then x should overwrite original x, not add to datstore")
+			alice, err = client.InitUser("alice", defaultPassword)
+			alice.StoreFile(aliceFile, []byte(contentOne))
+
+			lengthOfDatastore := len(userlib.DatastoreGetMap())
+
+			alice.StoreFile(aliceFile, []byte(contentTwo))
+			newLengthOfDatastore := len(userlib.DatastoreGetMap())
+			Expect(newLengthOfDatastore).To(Equal(lengthOfDatastore))
+
+			data, err := alice.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentTwo)))
+		})
+	})
+
+	Describe("Revoke Access Test", func() {
+		Specify("Revoke Invitation from Bob", func() {
+			userlib.DebugMsg("Alice shares with Bob, Bob Shares with Charles, revoke Bob, Bob and Charles can't loadFile")
+			alice, err = client.InitUser("alice", defaultPassword)
+			bob, err = client.InitUser("bob", defaultPassword)
+			charles, err = client.InitUser("charles", defaultPassword)
+
+			alice.StoreFile(aliceFile, []byte(contentOne))
+			aliceFile_uuid, _ := alice.CreateInvitation(aliceFile, bob.Username)
+
+			bob.AcceptInvitation(alice.Username, aliceFile_uuid, aliceFile)
+			bobFromAlice_uuid, _ := bob.CreateInvitation(aliceFile, charles.Username)
+
+			charles.AcceptInvitation(bob.Username, bobFromAlice_uuid, aliceFile)
+
+			alice.RevokeAccess(aliceFile, bob.Username)
+
+			_, err = bob.LoadFile(aliceFile)
+			Expect(err).ToNot(BeNil())
+
+			_, err = charles.LoadFile(aliceFile)
+			Expect(err).ToNot(BeNil())
+		})
+	})
+		
 
 })
 
