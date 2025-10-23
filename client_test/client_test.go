@@ -314,8 +314,30 @@ var _ = Describe("Client Tests", func() {
 		})
 	})
 
-	Describe("Revoke Access Test", func() {
-		Specify("Revoke Invitation from Bob", func() {
+	Describe("Invitation Tests", func() {
+		Specify("Invitation Integrity", func() {
+			userlib.DebugMsg("Alice create invitation, it gets tampered, Bob should not accept")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+
+			alice.StoreFile(aliceFile, []byte("come to my party"))
+			invitationUUID, err := alice.CreateInvitation(aliceFile, bob.Username)
+			Expect(err).To(BeNil())
+
+			for k := range userlib.DatastoreGetMap() {
+				v := userlib.DatastoreGetMap()[k]
+				v[len(v)-1] ^= 0xFF
+				userlib.DatastoreGetMap()[k] = v
+			}
+
+			err = bob.AcceptInvitation(alice.Username, invitationUUID, aliceFile)
+			Expect(err).ToNot(BeNil())
+		})
+
+		Specify("Revoke Invitation from Bob Success", func() {
 			userlib.DebugMsg("Alice shares with Bob, Bob Shares with Charles, revoke Bob, Bob and Charles can't loadFile")
 			alice, err = client.InitUser("alice", defaultPassword)
 			Expect(err).To(BeNil())
@@ -342,6 +364,7 @@ var _ = Describe("Client Tests", func() {
 			_, err = charles.LoadFile(aliceFile)
 			Expect(err).ToNot(BeNil())
 		})
+
 	})
 	Describe("HMAC Test", func() {
 		Specify("Create and Verify HMAC", func() {
