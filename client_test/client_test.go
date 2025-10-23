@@ -52,7 +52,7 @@ var _ = Describe("Client Tests", func() {
 	var alice *client.User
 	var bob *client.User
 	var charles *client.User
-	// var doris *client.User
+	//var doris *client.User
 	// var eve *client.User
 	// var frank *client.User
 	// var grace *client.User
@@ -254,7 +254,7 @@ var _ = Describe("Client Tests", func() {
 		Specify("Datastore get user fail", func() {
 			userlib.DebugMsg("Get a user from the Datastore and check if user exists")
 			alice, err = client.InitUser("alice", defaultPassword)
-			_,  err = client.GetUser("alice", "Wrong_Passoword")
+			_, err = client.GetUser("alice", "Wrong_Passoword")
 			Expect(err).ToNot(BeNil())
 
 			userlib.DebugMsg("Tamper with datastore, so GetUser should fail ")
@@ -268,12 +268,23 @@ var _ = Describe("Client Tests", func() {
 			Expect(err).ToNot(BeNil())
 
 		})
+		Specify("Duplicate Username", func() {
+			userlib.DebugMsg("Duplication username should fail")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			alice, err = client.InitUser("alice", "password3")
+			Expect(err).ToNot(BeNil())
+		})
 	})
+
 	//Integrity Test for File
 	Describe("Store/Loading File Test", func() {
 		Specify("Tampering with a stored file and loading it get user fail", func() {
 			userlib.DebugMsg("tamper the file stored")
 			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
 			alice.StoreFile(aliceFile, []byte(contentOne))
 
 			//for every key , change last bit of value
@@ -282,7 +293,7 @@ var _ = Describe("Client Tests", func() {
 				v[0] ^= 0xFF
 				userlib.DatastoreGetMap()[k] = v
 			}
-			_, err = alice.LoadFile(aliceFile) 
+			_, err = alice.LoadFile(aliceFile)
 			Expect(err).ToNot(BeNil())
 
 		})
@@ -307,8 +318,13 @@ var _ = Describe("Client Tests", func() {
 		Specify("Revoke Invitation from Bob", func() {
 			userlib.DebugMsg("Alice shares with Bob, Bob Shares with Charles, revoke Bob, Bob and Charles can't loadFile")
 			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
 			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+
 			charles, err = client.InitUser("charles", defaultPassword)
+			Expect(err).To(BeNil())
 
 			alice.StoreFile(aliceFile, []byte(contentOne))
 			aliceFile_uuid, _ := alice.CreateInvitation(aliceFile, bob.Username)
@@ -327,10 +343,12 @@ var _ = Describe("Client Tests", func() {
 			Expect(err).ToNot(BeNil())
 		})
 	})
-	Describe("HMAC Test" , func() {
+	Describe("HMAC Test", func() {
 		Specify("Create and Verify HMAC", func() {
 			userlib.DebugMsg("Alice signs in then logs in with same password, HMAC should be same")
 			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
 			rootKey := userlib.Argon2Key([]byte(defaultPassword), []byte("0"), 32)
 			firstHMAC, _ := userlib.HMACEval(rootKey, []byte(defaultPassword))
 			_, err = client.GetUser(alice.Username, defaultPassword)
@@ -342,11 +360,9 @@ var _ = Describe("Client Tests", func() {
 		})
 	})
 
-		
-
 })
 
-/* call with client/name.___ 
+/* call with client/name.___
 InitUser
 GetUser
 StoreFile
