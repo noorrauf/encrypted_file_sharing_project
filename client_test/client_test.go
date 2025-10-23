@@ -195,7 +195,6 @@ var _ = Describe("Client Tests", func() {
 
 			invite, err := alice.CreateInvitation(aliceFile, "bob")
 			Expect(err).To(BeNil())
-
 			err = bob.AcceptInvitation("alice", invite, bobFile)
 			Expect(err).To(BeNil())
 
@@ -251,5 +250,43 @@ var _ = Describe("Client Tests", func() {
 		})
 
 	})
+	Describe("GetUser Tests", func() {
+		Specify("Datastore get user fail", func() {
+			userlib.DebugMsg("Get a user from the Datastore and check if user exists")
+			alice, err = client.InitUser("alice", defaultPassword)
+			_,  err = client.GetUser("alice", "Wrong_Passoword")
+			Expect(err).ToNot(BeNil())
+
+			//Integrity Fail
+			userlib.DebugMsg("Tamper with datastore, so GetUser should fail ")
+			//for every key , change last bit of value
+			for k := range userlib.DatastoreGetMap() {
+				v := userlib.DatastoreGetMap()[k]
+				v[len(v)-1] ^= 0xFF
+				userlib.DatastoreGetMap()[k] = v
+			}
+			_, err = client.GetUser("alice", defaultPassword)
+			Expect(err).ToNot(BeNil())
+
+		})
+	})
 
 })
+
+/* call with client/name.___ 
+InitUser
+GetUser
+StoreFile
+LoadFile
+AppendToFile
+CreateInvitation
+AcceptInvitation
+RevokeAccess
+*/
+
+/*userlib
+userlib.uuid
+userlib.hmacEval(key, msg) --> byte array,error
+userlib.hmacEqual(byte array, byte array) --> yes or no
+
+*/
