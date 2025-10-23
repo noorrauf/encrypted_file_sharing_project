@@ -327,6 +327,21 @@ var _ = Describe("Client Tests", func() {
 			Expect(err).ToNot(BeNil())
 		})
 	})
+	Describe("HMAC Test" , func() {
+		Specify("Create and Verify HMAC", func() {
+			userlib.DebugMsg("Alice signs in then logs in with same password, HMAC should be same")
+			alice, err = client.InitUser("alice", defaultPassword)
+			rootKey = userlib.Argon2Key([]byte(defaultPassword), 0)
+			firstHMAC = userlib.HMACEval(rootKey, []byte(defaultPassword))
+			_, err = client.GetUser(alice.Username, defaultPassword)
+			defaultPassword = "attacker"
+			secondHMAC = userlib.HMACEval(rootKey, []byte(defaultPassword))
+
+			Expect(userlib.HMACEqual(firstHMAC, secondHMAC)).To(BeFalse())
+
+	})
+
+
 		
 
 })
