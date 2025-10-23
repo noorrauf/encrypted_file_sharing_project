@@ -331,16 +331,16 @@ var _ = Describe("Client Tests", func() {
 		Specify("Create and Verify HMAC", func() {
 			userlib.DebugMsg("Alice signs in then logs in with same password, HMAC should be same")
 			alice, err = client.InitUser("alice", defaultPassword)
-			rootKey = userlib.Argon2Key([]byte(defaultPassword), 0)
-			firstHMAC = userlib.HMACEval(rootKey, []byte(defaultPassword))
+			rootKey := userlib.Argon2Key([]byte(defaultPassword), []byte("0"), 32)
+			firstHMAC, _ := userlib.HMACEval(rootKey, []byte(defaultPassword))
 			_, err = client.GetUser(alice.Username, defaultPassword)
-			defaultPassword = "attacker"
-			secondHMAC = userlib.HMACEval(rootKey, []byte(defaultPassword))
+			defaultPassword := "attacker"
+			secondHMAC, _ := userlib.HMACEval(rootKey, []byte(defaultPassword))
 
 			Expect(userlib.HMACEqual(firstHMAC, secondHMAC)).To(BeFalse())
 
+		})
 	})
-
 
 		
 
@@ -361,5 +361,4 @@ RevokeAccess
 userlib.uuid
 userlib.hmacEval(key, msg) --> byte array,error
 userlib.hmacEqual(byte array, byte array) --> yes or no
-
 */
