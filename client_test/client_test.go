@@ -105,14 +105,19 @@ var _ = Describe("Client Tests", func() {
 			userlib.DebugMsg("Storing file data: %s", contentOne)
 			err = alice.StoreFile(aliceFile, []byte(contentOne))
 			Expect(err).To(BeNil())
+			userlib.DebugMsg("stored file with " + contentOne)
 
 			userlib.DebugMsg("Appending file data: %s", contentTwo)
 			err = alice.AppendToFile(aliceFile, []byte(contentTwo))
 			Expect(err).To(BeNil())
 
+			userlib.DebugMsg("appended file with " + contentTwo)
+
 			userlib.DebugMsg("Appending file data: %s", contentThree)
 			err = alice.AppendToFile(aliceFile, []byte(contentThree))
 			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("appended file with " + contentOne + contentTwo + contentThree)
 
 			userlib.DebugMsg("Loading file...")
 			data, err := alice.LoadFile(aliceFile)
@@ -375,8 +380,7 @@ var _ = Describe("Client Tests", func() {
 			rootKey := userlib.Argon2Key([]byte(defaultPassword), []byte("0"), 32)
 			firstHMAC, _ := userlib.HMACEval(rootKey, []byte(defaultPassword))
 			_, err = client.GetUser(alice.Username, defaultPassword)
-			defaultPassword := "attacker"
-			secondHMAC, _ := userlib.HMACEval(rootKey, []byte(defaultPassword))
+			secondHMAC, _ := userlib.HMACEval(rootKey, []byte("defaultPassword"))
 
 			Expect(userlib.HMACEqual(firstHMAC, secondHMAC)).To(BeFalse())
 
