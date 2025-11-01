@@ -110,16 +110,12 @@ func someUsefulThings() {
 type User struct {
 	Username string
 
-	encKey      []byte
-	macKey      []byte
+	EncKey      []byte              `json:"-"`
+	MacKey      []byte              `json:"-"`
 	PKEEncKey   userlib.PKEEncKey   //RSA public used to encrypt with userlib.PKEEnc
 	PKEDecKey   userlib.PKEDecKey   //RSA private used to decrypt with userlib.PKEDec
 	DSSignKey   userlib.DSSignKey   //private signing key with userlib.DSSign - outputs a signature byte array
 	DSVerifyKey userlib.DSVerifyKey //public verify key with userlib.DSVerify
-
-	LockBoxUUIDMap map[string]uuid.UUID //for each reciipient, there is a Lockbox UUID for a struct that contains FileKey/FileUUIDn used to encrypt FileStruct/FileContent
-	LockBoxEncMap  map[string][]byte    //for each reciipient, there is a lockBox encryption Key for a struct that contains FileKey/FileUUIDn used to encrypt FileStruct/FileContent
-	LockBoxMacMap  map[string][]byte    //for each reciipient, there is a Lockbox mac key for a struct that contains FileKey/FileUUIDn used to encrypt FileStruct/FileContent
 
 	// You can add other attributes here if you want! But note that in order for attributes to
 	// be included when this struct is serialized to/from JSON, they must be capitalized.
@@ -137,9 +133,6 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	}
 	var userdata User
 	userdata.Username = username
-	userdata.LockBoxUUIDMap = make(map[string]uuid.UUID)
-	userdata.LockBoxEncMap = make(map[string][]byte)
-	userdata.LockBoxMacMap = make(map[string][]byte)
 
 	//create uuid username and put in datastore
 	hashed_username := userlib.Hash([]byte(username))
@@ -159,8 +152,8 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	if err != nil {
 		return nil, err
 	}
-	userdata.encKey = user_encKey
-	userdata.macKey = user_macKey
+	userdata.EncKey = user_encKey
+	userdata.MacKey = user_macKey
 
 	pubEncKey, privDecKey, err := userlib.PKEKeyGen()
 	if err != nil {
@@ -235,8 +228,8 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	if err != nil {
 		return nil, err
 	}
-	userdata.encKey = user_encKey
-	userdata.macKey = user_macKey
+	userdata.EncKey = user_encKey
+	userdata.MacKey = user_macKey
 
 	ciphertext := encryptedStruct[:(len(encryptedStruct) - userlib.HashSizeBytes)] //extract ciphertext from combined HMAC
 	tag := encryptedStruct[(len(encryptedStruct) - userlib.HashSizeBytes):]
@@ -245,10 +238,11 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	if err != nil {
 		return nil, err
 	}
+
 	//verify HMAC before decrypting
 	tagMatch := userlib.HMACEqual(expectedTag, tag)
 	if !tagMatch {
-		return nil, errors.New("BAD USER GO AWAY")
+		return nil, errors.New("you are not a user, GO AWAY")
 	}
 	//password is correct
 	plaintext := userlib.SymDec(user_encKey[:16], ciphertext)
@@ -266,15 +260,24 @@ type FileContents struct {
 	Content []byte
 	Next    userlib.UUID
 }
+
+type Map struct {
+	LockBoxUUIDMap map[string]uuid.UUID //for each reciipient, there is a Lockbox UUID for a struct that contains FileKey/FileUUIDn used to encrypt FileStruct/FileContent
+	LockBoxEncMap  map[string][]byte    //for each reciipient, there is a lockBox encryption Key for a struct that contains FileKey/FileUUIDn used to encrypt FileStruct/FileContent
+	LockBoxMacMap  map[string][]byte    //for each reciipient, there is a Lockbox mac key for a struct that contains FileKey/FileUUIDn used to encrypt FileStruct/FileContent
+
+}
 type FileStart struct {
 	FileOwner string
 	Head      userlib.UUID
 	Tail      userlib.UUID
+	Map       userlib.UUID
 }
 type LockBox struct {
 	FileEncKey []byte
 	FileMacKey []byte
 	FileUUID   uuid.UUID
+	Revoked    bool
 }
 type Access struct {
 	LockBox       uuid.UUID
@@ -297,11 +300,19 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) { /
 	fc.Content = content
 	fc.Next = uuid.Nil
 
+	//initialize Map struct
+	var map_struct Map
+	mapUUID := uuid.New()
+	map_struct.LockBoxUUIDMap = make(map[string]uuid.UUID)
+	map_struct.LockBoxEncMap = make(map[string][]byte)
+	map_struct.LockBoxMacMap = make(map[string][]byte)
+
 	//filename's FileStart struct created, points to first and last fileContents blocks
 	var starter FileStart
 	starter.FileOwner = userdata.Username
 	starter.Head = fileContentUUID
 	starter.Tail = fileContentUUID
+	starter.Map = mapUUID
 
 	var lockBox LockBox //initialize a lockbox for this filename
 	var access Access   // initialize an access struct which has a unique uuid bc each filename is uniquely created by this user
@@ -320,6 +331,7 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) { /
 	lockBox.FileEncKey = fileKey //store fileKey in the lockbox to be accessed later in load file and sharing files
 	lockBox.FileMacKey = fileMACKey
 	lockBox.FileUUID = fileStartUUID
+	lockBox.Revoked = false
 
 	//generate a lockbox Key which encrypts the LockBox and is stored in Access struct
 	lockBoxKey := userlib.RandomBytes(userlib.AESKeySizeBytes)
@@ -332,31 +344,39 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) { /
 	access.LockBox = lockBoxUUID
 
 	//encrypt fileStart
-	fileStartCipher, err := SymEncryption(starter, fileKey, fileMACKey)
+	fileStartCipher, err := SymEncryption(starter, fileKey, fileMACKey, userdata.Username)
 	if err != nil {
 		return err
 	}
 
 	// encrypt FileContents with same process above
-	fileContentCipher, err := SymEncryption(fc, fileKey, fileMACKey)
+	fileContentCipher, err := SymEncryption(fc, fileKey, fileMACKey, userdata.Username)
 	if err != nil {
 		return err
 	}
 
 	//encrypt lockbox
-	lockBoxCipher, err := SymEncryption(lockBox, lockBoxKey, lockBoxMACKey)
+	lockBoxCipher, err := SymEncryption(lockBox, lockBoxKey, lockBoxMACKey, userdata.Username)
 	if err != nil {
 		return err
 	}
 	//encrypt Access struct
-	accessCipher, err := SymEncryption(access, userdata.encKey, userdata.macKey)
+	accessCipher, err := SymEncryption(access, userdata.EncKey, userdata.MacKey, userdata.Username)
 	if err != nil {
 		return err
 	}
+
+	//encrypt Map struct
+	mapCipher, err := SymEncryption(map_struct, userdata.EncKey, userdata.MacKey, userdata.Username)
+	if err != nil {
+		return err
+	}
+
 	userlib.DatastoreSet(fileStartUUID, fileStartCipher)     //add filename's UUID + fileStartenc to datastore
 	userlib.DatastoreSet(fileContentUUID, fileContentCipher) //add file content's UUID + file Content enc to datastore
 	userlib.DatastoreSet(lockBoxUUID, lockBoxCipher)         //add lockbox's UUID + lockbox struct to datastore
 	userlib.DatastoreSet(accessUUID, accessCipher)           //add access's UUID + access struct to datastore
+	userlib.DatastoreSet(mapUUID, mapCipher)                 //add map's UUID + map struct to datastore
 
 	return nil
 }
@@ -373,7 +393,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 	if !ok { //check if file exists in datastore, if not error
 		return errors.New("does not exist in datastore")
 	}
-	err = SymDecryption(accessCipher, userdata.encKey, userdata.macKey, &accessStruct)
+	err = SymDecryption(accessCipher, userdata.EncKey, userdata.MacKey, &accessStruct, userdata.Username)
 	if err != nil {
 		return err
 	}
@@ -387,13 +407,16 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 	if !ok {
 		return errors.New(filename + "lock box does not exist when appending file")
 	}
-	err = SymDecryption(lockBoxCipher, lockboxEncKey, lockboxMacKey, &lockBox)
+	err = SymDecryption(lockBoxCipher, lockboxEncKey, lockboxMacKey, &lockBox, userdata.Username)
 	if err != nil {
 		return err
 	}
 	ogEncFileKey := lockBox.FileEncKey
 	ogMacFileKey := lockBox.FileMacKey
 	fileUUID := lockBox.FileUUID //fileStart UUID
+	if lockBox.Revoked {
+		return errors.New("you are not allowed to access this file")
+	}
 
 	ciphertext, ok := userlib.DatastoreGet(fileUUID) //encrypted+tag marshaled fileStart struct
 	if !ok {
@@ -402,7 +425,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 
 	//file exists and we have fileKey so need to decrypt fileStart struct
 	var fileStartCopy FileStart
-	err = SymDecryption(ciphertext, ogEncFileKey, ogMacFileKey, &fileStartCopy)
+	err = SymDecryption(ciphertext, ogEncFileKey, ogMacFileKey, &fileStartCopy, userdata.Username)
 	if err != nil {
 		return err
 	}
@@ -412,7 +435,7 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 		return errors.New("file does not exist")
 	}
 	var currFileEndCopy FileContents
-	err = SymDecryption(currFileEndCipher, ogEncFileKey, ogMacFileKey, &currFileEndCopy) //currFileEndCopy now has the curr last fileContent block
+	err = SymDecryption(currFileEndCipher, ogEncFileKey, ogMacFileKey, &currFileEndCopy, userdata.Username) //currFileEndCopy now has the curr last fileContent block
 	if err != nil {
 		return err
 	}
@@ -428,15 +451,15 @@ func (userdata *User) AppendToFile(filename string, content []byte) error {
 	fileStartCopy.Tail = newFileContentUUID   // fileStart for this filename Tail pointer = new appended FileContent block
 
 	//re-encryt FileStart and currFileEnd, and encrypt newFileEnd
-	fileStartValue, err := SymEncryption(fileStartCopy, ogEncFileKey, ogMacFileKey)
+	fileStartValue, err := SymEncryption(fileStartCopy, ogEncFileKey, ogMacFileKey, userdata.Username)
 	if err != nil {
 		return err
 	}
-	currFileEndValue, err := SymEncryption(currFileEndCopy, ogEncFileKey, ogMacFileKey)
+	currFileEndValue, err := SymEncryption(currFileEndCopy, ogEncFileKey, ogMacFileKey, userdata.Username)
 	if err != nil {
 		return err
 	}
-	newFileEndValue, err := SymEncryption(newfileBlock, ogEncFileKey, ogMacFileKey)
+	newFileEndValue, err := SymEncryption(newfileBlock, ogEncFileKey, ogMacFileKey, userdata.Username)
 	if err != nil {
 		return err
 	}
@@ -461,7 +484,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 	if !ok { //check if file exists in datastore, if not error
 		return nil, errors.New("does not exist in datastore")
 	}
-	err = SymDecryption(accessCipher, userdata.encKey, userdata.macKey, &accessStruct)
+	err = SymDecryption(accessCipher, userdata.EncKey, userdata.MacKey, &accessStruct, userdata.Username)
 	if err != nil {
 		return nil, err
 	}
@@ -474,13 +497,16 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 	if !ok {
 		return nil, errors.New("lockbox for" + filename + "doesn't exist")
 	}
-	err = SymDecryption(lockBoxCipher, lockboxEncKey, lockboxMacKey, &lockBox)
+	err = SymDecryption(lockBoxCipher, lockboxEncKey, lockboxMacKey, &lockBox, userdata.Username)
 	if err != nil {
 		return nil, err
 	}
 	ogEncFileKey := lockBox.FileEncKey
 	ogMacFileKey := lockBox.FileMacKey
 	fileUUID := lockBox.FileUUID
+	if lockBox.Revoked {
+		return nil, errors.New("you are not allowed to access this file")
+	}
 
 	ciphertext, ok := userlib.DatastoreGet(fileUUID) //encrypted+tag marshaled fileStart struct
 	if !ok {
@@ -489,7 +515,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 
 	//file exists and we have fileKey so need to decrypt fileStart struct
 	var fileStartCopy FileStart
-	err = SymDecryption(ciphertext, ogEncFileKey, ogMacFileKey, &fileStartCopy)
+	err = SymDecryption(ciphertext, ogEncFileKey, ogMacFileKey, &fileStartCopy, userdata.Username)
 	if err != nil {
 		return nil, err
 	}
@@ -501,7 +527,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		if !ok {
 			return nil, errors.New("first file content block does not exist")
 		}
-		err = SymDecryption(fileContentcipher, ogEncFileKey, ogMacFileKey, &fileContentCopy)
+		err = SymDecryption(fileContentcipher, ogEncFileKey, ogMacFileKey, &fileContentCopy, userdata.Username)
 		if err != nil {
 			return nil, err
 		}
@@ -517,7 +543,7 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 		if !ok {
 			return nil, errors.New("content does not exist")
 		}
-		err = SymDecryption(currContentcipher, ogEncFileKey, ogMacFileKey, &fileContentCopy)
+		err = SymDecryption(currContentcipher, ogEncFileKey, ogMacFileKey, &fileContentCopy, userdata.Username)
 		if err != nil {
 			return nil, err
 		}
@@ -547,7 +573,8 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	if !ok { //check if file exists in datastore, if not error
 		return uuid.Nil, errors.New("does not exist in datastore")
 	}
-	err = SymDecryption(accessCipher, userdata.encKey, userdata.macKey, &accessStruct)
+
+	err = SymDecryption(accessCipher, userdata.EncKey, userdata.MacKey, &accessStruct, userdata.Username)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -561,7 +588,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	if !ok {
 		return uuid.Nil, errors.New("lockbox for" + filename + "doesn't exist")
 	}
-	err = SymDecryption(lockBoxCipher, lockboxEncKey, lockboxMacKey, &lockBox)
+	err = SymDecryption(lockBoxCipher, lockboxEncKey, lockboxMacKey, &lockBox, userdata.Username)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -575,10 +602,27 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	}
 	//file exists and we have fileKey so need to decrypt fileStart struct
 	var fileStartCopy FileStart
-	err = SymDecryption(ciphertext, ogEncFileKey, ogMacFileKey, &fileStartCopy)
+	err = SymDecryption(ciphertext, ogEncFileKey, ogMacFileKey, &fileStartCopy, userdata.Username)
 	if err != nil {
 		return uuid.Nil, err
 	}
+	//access the Map with the uuid stored in FileStart because user needs to update if they are the owner and sharing cause needed in revoke access
+	var fileMap Map
+	map_uuid := fileStartCopy.Map
+	mapCipher, ok := userlib.DatastoreGet(map_uuid)
+	if !ok { //check if map exists in datastore, if not error
+		return uuid.Nil, errors.New("map does not exist in datastore")
+	}
+
+	//only if user is the owner, then decrypt the map with their keys
+	if fileStartCopy.FileOwner == userdata.Username {
+
+		err = SymDecryption(mapCipher, userdata.EncKey, userdata.MacKey, &fileMap, userdata.Username)
+		if err != nil {
+			return uuid.Nil, err
+		}
+	}
+
 	var inv Invitation
 
 	if fileStartCopy.FileOwner != userdata.Username { //if non owner is sharing to another person, share a lockbox
@@ -587,15 +631,13 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		inv.LockBoxMacKey = lockboxMacKey
 		inv.Recipient = recipientUsername
 		inv.InvOwner = userdata.Username
-		userdata.LockBoxUUIDMap[recipientUsername] = lockboxUUID
-		userdata.LockBoxEncMap[recipientUsername] = lockboxEncKey
-		userdata.LockBoxMacMap[recipientUsername] = lockboxMacKey
 
-	} else {
+	} else { //meaning user creating inv IS the owner and needs to update their Map so they know the lockbox of the person they directly shared with
 		var recipientLockBox LockBox
 		recipientLockBox.FileUUID = fileUUID
 		recipientLockBox.FileEncKey = ogEncFileKey
 		recipientLockBox.FileMacKey = ogMacFileKey
+		recipientLockBox.Revoked = false
 
 		recipientLockBoxUUID := uuid.New()
 		recipientLockBoxKey := userlib.RandomBytes(userlib.AESKeySizeBytes)
@@ -604,21 +646,28 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 			return uuid.Nil, err
 		}
 		//encrypt lockbox
-		recipientLockBoxCipher, err := SymEncryption(recipientLockBox, recipientLockBoxKey, recipientLockBoxMACKey)
+		recipientLockBoxCipher, err := SymEncryption(recipientLockBox, recipientLockBoxKey, recipientLockBoxMACKey, userdata.Username)
 		if err != nil {
 			return uuid.Nil, err
 		}
 		userlib.DatastoreSet(recipientLockBoxUUID, recipientLockBoxCipher) //store recipients LockBox in datastore
 
+		//invitation with new LB has been created to send to the other user
 		inv.LockBoxUUID = recipientLockBoxUUID
 		inv.LockBoxEncKey = recipientLockBoxKey
 		inv.LockBoxMacKey = recipientLockBoxMACKey
 		inv.Recipient = recipientUsername
 		inv.InvOwner = userdata.Username
 
-		userdata.LockBoxUUIDMap[recipientUsername] = recipientLockBoxUUID
-		userdata.LockBoxEncMap[recipientUsername] = recipientLockBoxKey
-		userdata.LockBoxMacMap[recipientUsername] = recipientLockBoxMACKey
+		//Since user IS THE OWNER, add everything to the maps in the Map Struct for this recipient and Encrypt IN THE IF statement to use only the owners keys (Bob should not be encrypting the map struct, only Alice)
+		fileMap.LockBoxUUIDMap[recipientUsername] = recipientLockBoxUUID
+		fileMap.LockBoxEncMap[recipientUsername] = recipientLockBoxKey
+		fileMap.LockBoxMacMap[recipientUsername] = recipientLockBoxMACKey
+		mapCipher, err := SymEncryption(fileMap, userdata.EncKey, userdata.MacKey, userdata.Username)
+		if err != nil {
+			return uuid.Nil, err
+		}
+		userlib.DatastoreSet(map_uuid, mapCipher)
 
 	}
 	invUUID := uuid.New()
@@ -649,6 +698,7 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		return uuid.Nil, err
 	}
 	storedValue := append(combined, signedCipherInv...) //need to access the msg AND the signature for verification
+
 	userlib.DatastoreSet(invUUID, storedValue)
 
 	return invUUID, nil
@@ -704,7 +754,7 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	access.LockBoxMacKey = invCopy.LockBoxMacKey
 	access.LockBox = invCopy.LockBoxUUID
 
-	accessCipher, err := SymEncryption(access, userdata.encKey, userdata.macKey)
+	accessCipher, err := SymEncryption(access, userdata.EncKey, userdata.MacKey, userdata.Username)
 	if err != nil {
 		return err
 	}
@@ -715,10 +765,6 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 }
 
 func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
-	//QUESTION FOR OH** if A --> B and B --> C and B revokes on C but B and C are sharing a Lockbox bc B is not the owner,
-	//changing the filekey and then updating it in the lockbox wont do anhything to C because they share it, so C has that new placement
-	// should the person doing the revoking change the location of THEIR lockbox because they can adjust their Access struct
-	// so C's access struct has the value of the Old lockbox of B and now wont be able to acces the new B's lockbox which directs to the newUUID of this file
 
 	//decrypt access struct --> decrypt lockbox struct --> get fileStart
 	var accessStruct Access
@@ -730,11 +776,11 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	if !ok { //check if file exists in datastore, if not error
 		return errors.New("does not exist in datastore")
 	}
-	err = SymDecryption(accessCipher, userdata.encKey, userdata.macKey, &accessStruct)
+	err = SymDecryption(accessCipher, userdata.EncKey, userdata.MacKey, &accessStruct, userdata.Username)
 	if err != nil {
 		return err
 	}
-	lockboxUUID := accessStruct.LockBox
+	lockboxUUID := accessStruct.LockBox //user's lockboxUUID
 	lockboxEncKey := accessStruct.LockBoxEncKey
 	lockboxMacKey := accessStruct.LockBoxMacKey
 
@@ -744,17 +790,22 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 	if !ok {
 		return errors.New("lockbox for" + filename + "doesn't exist")
 	}
-	err = SymDecryption(lockBoxCipher, lockboxEncKey, lockboxMacKey, &lockBox)
+	err = SymDecryption(lockBoxCipher, lockboxEncKey, lockboxMacKey, &lockBox, userdata.Username)
 	if err != nil {
 		return err
 	}
-	ogEncFileKey := lockBox.FileEncKey
+	ogEncFileKey := lockBox.FileEncKey //original
 	ogMacFileKey := lockBox.FileMacKey
-	fileToRevokeUUID := lockBox.FileUUID
+	fileStartUUID := lockBox.FileUUID
 
-	ciphertext, ok := userlib.DatastoreGet(fileToRevokeUUID) //encrypted+tag marshaled fileStart struct
+	ciphertext, ok := userlib.DatastoreGet(fileStartUUID) //encrypted+tag marshaled fileStart struct
 	if !ok {
 		return errors.New("file does not exist")
+	}
+	var fileStartCopy FileStart
+	err = SymDecryption(ciphertext, ogEncFileKey, ogMacFileKey, &fileStartCopy, userdata.Username)
+	if err != nil {
+		return err
 	}
 
 	newFileStartUUID := uuid.New() //generate a new UUID for this file to revoke from others
@@ -764,66 +815,173 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) er
 		return err
 	}
 
-	//*ASK IN OH* Is it breaking any bandwidth or anything if we loop through the FileContent blocks and re-encrypt
-	//loop through the file contents and re-encrypt them with the new file keys
+	//file start is at fileStartUUID RIGHT NOW, need to move to newFileStartUUID
+	newCurrUUID := newFileStartUUID  //where the curr file block will be
+	ogNextUUID := fileStartCopy.Head //first file content UUID
+	newNextUUID := uuid.New()        //where first file content will placed
+	fileStartCopy.Head = newNextUUID
 
-	for username, recipientLockBoxUUID := range userdata.LockBoxUUIDMap {
-		if username == recipientUsername { //if username == the user we want to revoke then skip
-			continue
+	//loop
+	for ogNextUUID != uuid.Nil {
+		var contentCopy FileContents
+		cipherContent, ok := userlib.DatastoreGet(ogNextUUID)
+		if !ok {
+			return errors.New("next file content does not exist in datastore")
 		}
-		//username = recipient we want to keep access so update their lockboxes
-		recipientLockBoxEncKey := userdata.LockBoxEncMap[username]
-		recipientLockBoxMacKey := userdata.LockBoxMacMap[username]
-		//*ASK IN OH* is it ok to have these maps because we needed a way to decrypt the lockboxes of the users A wants to keep
-		//But if we only have the Lockbox UUID, and not the keys we cant do that...
-		//is there another way to keep track of the LockBox keys needed
+		err := SymDecryption(cipherContent, ogEncFileKey, ogMacFileKey, &contentCopy, userdata.Username)
+		if err != nil {
+			return err
+		}
+		newCurrUUID = newNextUUID      //newCurrUUID = A's new uuid
+		ogNextUUID = contentCopy.Next  //where B is currently
+		newNextUUID = uuid.New()       //where B will be moved to
+		contentCopy.Next = newNextUUID //current block Next pointer now points to B's new uuid
+
+		contentCipher, err := SymEncryption(contentCopy, newFileKey, newFileMACKey, userdata.Username)
+		if err != nil {
+			return err
+		}
+		userlib.DatastoreSet(newCurrUUID, contentCipher) //this file block has successfully been moved to a new UUID
 	}
+
+	fileStartCopy.Tail = newCurrUUID
+	//copyA = unmarshal(decrypt(datastoreGet(ogNext)))
+	//newCurrUUID = newNextUUID A's new UUID
+	// ogNext = copyA.next --> B
+	//newNextUUID = uuid.New()B's new UUID
+	// copyA.next = newNextUUID
+	//encry A
+	// datastoreset(newCurrUUID, enc A)
+
+	//FileStart and FileContents have been moved. Update own lockbox and lockboxes of ppl we want to keep access with newFileKey and newFileStartUUID
+	var mapCopy Map
+	mapUUID := fileStartCopy.Map
+	mapCipher, ok := userlib.DatastoreGet(mapUUID)
+	if !ok {
+		return errors.New("map not found")
+	}
+
+	err = SymDecryption(mapCipher, userdata.EncKey, userdata.MacKey, &mapCopy, userdata.Username)
+	if err != nil {
+		return err
+	}
+
+	recipientToLockboxUUIDMap := mapCopy.LockBoxUUIDMap
+	recipientToLockboxEncKeyMap := mapCopy.LockBoxEncMap
+	recipientToLockboxMacKeyMap := mapCopy.LockBoxMacMap
+
+	//update own lockbox TODO: reset lockBox at lockboxUUID
+	lockBox.FileUUID = newFileStartUUID
+	lockBox.FileEncKey = newFileKey
+	lockBox.FileMacKey = newFileMACKey
+	lockBox.Revoked = false
+
+	cipherLockBox, err := SymEncryption(lockBox, lockboxEncKey, lockboxMacKey, userdata.Username)
+	if err != nil {
+		return err
+	}
+	userlib.DatastoreSet(lockboxUUID, cipherLockBox)
+
+	//iterate through lockboxes in recipientToLockboxUUIDMap and update their values to newfilekeys and uuid
+	for username, usernamesLockBoxUUID := range recipientToLockboxUUIDMap {
+		//username is the recipient we want to keep access so update their lockboxes
+		usernamesLockBoxEncKey := recipientToLockboxEncKeyMap[username]
+		usernamesLockBoxMacKey := recipientToLockboxMacKeyMap[username]
+
+		usernameLBCipher, ok := userlib.DatastoreGet(usernamesLockBoxUUID)
+		if !ok {
+			return errors.New("recipient's lockbox does not exist")
+		}
+
+		var usernameLB LockBox
+		err := SymDecryption(usernameLBCipher, usernamesLockBoxEncKey, usernamesLockBoxMacKey, &usernameLB, userdata.Username)
+		if err != nil {
+			return err
+		}
+		if username != recipientUsername { //if username is not a user we want to revoke, change their LockBox values
+			usernameLB.FileUUID = newFileStartUUID
+			usernameLB.FileEncKey = newFileKey
+			usernameLB.FileMacKey = newFileMACKey
+			usernameLB.Revoked = false
+		} else { //else just change Revoked value to true
+			usernameLB.Revoked = true
+
+		}
+
+		usernameCipherLockBox, err := SymEncryption(usernameLB, usernamesLockBoxEncKey, usernamesLockBoxMacKey, userdata.Username)
+		if err != nil {
+			return err
+		}
+		userlib.DatastoreSet(usernamesLockBoxUUID, usernameCipherLockBox)
+	}
+
+	//re encrypt and datastoreSet map
+	encryptedMap, err := SymEncryption(mapCopy, userdata.EncKey, userdata.MacKey, userdata.Username)
+	if err != nil {
+		return err
+	}
+	userlib.DatastoreSet(mapUUID, encryptedMap)
+
+	//re encrypt and datastoreSet fileStart at new UUID
+	encryptedFileStart, err := SymEncryption(fileStartCopy, newFileKey, newFileMACKey, userdata.Username)
+	if err != nil {
+		return err
+	}
+	userlib.DatastoreSet(newFileStartUUID, encryptedFileStart)
 	return nil
 }
 
 // Helper Functions
 func MakeUserKeys(username string, password string) (encKey []byte, macKey []byte, err error) {
-	rootKey := userlib.Argon2Key([]byte(password), []byte(username), 32)
-
-	user_encKey, err := userlib.HashKDF(rootKey[:16], []byte("encryption"))
+	rootKey := userlib.Argon2Key([]byte(password), []byte(username), 16)
+	user_encKey, err := userlib.HashKDF(rootKey, []byte("encryption"))
 	if err != nil {
 		return nil, nil, err
 	}
-	user_macKey, err := userlib.HashKDF(rootKey[:16], []byte("MAC"))
+	user_macKey, err := userlib.HashKDF(rootKey, []byte("mac"))
+	
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return user_encKey, user_macKey, nil
+	return user_encKey[:16], user_macKey[:16], nil
 }
 
-func SymEncryption(v any, encKey []byte, macKey []byte) (ciphertext []byte, err error) {
-	iv := userlib.RandomBytes(userlib.AESBlockSizeBytes)
+func SymEncryption(v any, encKey []byte, macKey []byte, name string) (ciphertext []byte, err error) {
 
+	iv := userlib.RandomBytes(userlib.AESBlockSizeBytes)
 	byteArr, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
 	}
 
 	cipher := userlib.SymEnc(encKey[:16], iv, byteArr)
+
 	tag, err := userlib.HMACEval(macKey[:16], cipher)
+	
+	//fmt.Print("tag from encryption for " + name)
 	if err != nil {
 		return nil, err
 	}
+	
 	ciphertextMac := append(cipher, tag...)
 	return ciphertextMac, nil
 }
 
-func SymDecryption(ciphertextMac []byte, encKey []byte, macKey []byte, v any) (err error) {
+func SymDecryption(ciphertextMac []byte, encKey []byte, macKey []byte, v any, name string) (err error) {
+	
 	ciphertext := ciphertextMac[:(len(ciphertextMac) - userlib.HashSizeBytes)] //extract ciphertext from combined HMAC
-	tag := ciphertextMac[(len(ciphertextMac) - userlib.HashSizeBytes):]
 
+	tag := ciphertextMac[(len(ciphertextMac) - userlib.HashSizeBytes):]
+	//fmt.Print("tag from decryption for" + name)
 	expectedTag, err := userlib.HMACEval(macKey[:16], ciphertext)
 	if err != nil {
 		return err
 	}
+
 	//verify HMAC before decrypting
 	tagMatch := userlib.HMACEqual(expectedTag, tag)
+
 	if !tagMatch {
 		return errors.New("BAD USER GO AWAY")
 	}
