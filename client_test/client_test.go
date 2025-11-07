@@ -38,6 +38,10 @@ const emptyString = ""
 const contentOne = "Bitcoin is Nick's favorite "
 const contentTwo = "digital "
 const contentThree = "cryptocurrency!"
+const contentFour = "Zohran Mamdani for the win!"
+const contentFive = "Ummah Gala"
+const contentSix = "we're cooked"
+const contentSeven = "I'm tired of this Grandpa"
 
 // ================================================
 // Describe(...) blocks help you organize your tests
@@ -52,10 +56,10 @@ var _ = Describe("Client Tests", func() {
 	var alice *client.User
 	var bob *client.User
 	var charles *client.User
-	//var doris *client.User
-	// var eve *client.User
-	// var frank *client.User
-	// var grace *client.User
+	var rayana *client.User
+	var noor *client.User
+	var dima *client.User
+	var aisha *client.User
 	// var horace *client.User
 	// var ira *client.User
 
